@@ -1,18 +1,24 @@
 {
   "name": "homebridge-dirigera-custom-platform",
   "version": "1.0.0",
+  "private": true,
   "description": "Custom Homebridge platform for unsupported IKEA Dirigera Zigbee devices",
   "author": "lifeonmonday",
   "main": "index.js",
   "keywords": [
     "homebridge-plugin"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/lifeonmonday/homebridge-dirigera-custom-platform.git"
+  },
   "engines": {
     "node": ">=18.0.0",
     "homebridge": ">=1.6.0"
   },
   "homebridgePlugin": {
     "pluginType": "platform",
-    "pluginName": "homebridge-dirigera-custom-platform"
+    "pluginName": "homebridge-dirigera-custom-platform",
+    "pluginAuthor": "lifeonmonday"
   }
 }

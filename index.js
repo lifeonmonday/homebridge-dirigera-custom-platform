@@ -79,11 +79,11 @@ class DirigeraCustomPlatform {
     const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
     const deviceType = device.deviceType;
 
-    // 1. TERMOSTAT (z czujnika temperatury)
+    // 1. TERMOSTAT (Z czujnika temperatury)
     if (device.attributes?.currentTemperature !== undefined) {
       this.setupThermostat(device, uuid, existingAccessory);
     }
-    // 2. CZUJNIK OBECNOŚCI (Czysty deviceType)
+    // 2. CZUJNIK OBECNOŚCI
     else if (deviceType === 'occupancySensor') {
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
@@ -125,12 +125,6 @@ class DirigeraCustomPlatform {
     if (!accessory) {
       this.log.info(`Dodawanie Termostatu: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
-      
-      const thermostatService = accessory.addService(Service.Thermostat, name);
-      thermostatService.setCharacteristic(Characteristic.TargetTemperature, 21);
-      thermostatService.setCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
-      thermostatService.setCharacteristic(Characteristic.TargetHeatingCoolingState, Characteristic.TargetHeatingCoolingState.OFF);
-
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
@@ -138,6 +132,32 @@ class DirigeraCustomPlatform {
     this.updateAccessoryInformation(accessory, device);
 
     const thermostatService = this.getOrCreateService(accessory, Service.Thermostat, name);
+
+    // Domyślne wartości dla sztucznego termostatu
+    thermostatService.setCharacteristic(Characteristic.TargetTemperature, 21);
+
+    // Zablokowanie wyboru trybów pracy tylko do OFF
+    thermostatService.getCharacteristic(Characteristic.TargetHeatingCoolingState)
+      .setProps({
+        validValues: [Characteristic.TargetHeatingCoolingState.OFF]
+      });
+
+    // Ignorowanie prób zmiany stanu przez użytkownika
+    if (!thermostatService.getCharacteristic(Characteristic.TargetHeatingCoolingState).listeners('set').length) {
+      thermostatService.getCharacteristic(Characteristic.TargetHeatingCoolingState)
+        .onSet(() => {
+          setTimeout(() => {
+            thermostatService.updateCharacteristic(Characteristic.TargetHeatingCoolingState, Characteristic.TargetHeatingCoolingState.OFF);
+            thermostatService.updateCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
+          }, 50);
+        });
+    }
+
+    // Wymuszenie stałego stanu OFF
+    thermostatService.updateCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
+    thermostatService.updateCharacteristic(Characteristic.TargetHeatingCoolingState, Characteristic.TargetHeatingCoolingState.OFF);
+
+    // Aktualizacja odczytów środowiskowych
     thermostatService.updateCharacteristic(Characteristic.CurrentTemperature, temp);
 
     if (humidity !== undefined) {

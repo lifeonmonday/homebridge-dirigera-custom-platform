@@ -77,27 +77,18 @@ class DirigeraCustomPlatform {
   handleDevice(device) {
     const uuid = this.api.hap.uuid.generate(device.id);
     const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
+    const deviceType = device.deviceType;
 
-    const deviceType = (device.deviceType || '').toLowerCase();
-    const type = (device.type || '').toLowerCase();
-
-    // 1. TERMOSTAT (Czujnik temperatury)
+    // 1. TERMOSTAT (z czujnika temperatury)
     if (device.attributes?.currentTemperature !== undefined) {
       this.setupThermostat(device, uuid, existingAccessory);
     }
-    // 2. CZUJNIK OBECNOŚCI / RUCHU
-    else if (
-      deviceType.includes('occupancy') || 
-      deviceType.includes('motion') || 
-      type.includes('motion') || 
-      device.attributes?.isDetected !== undefined || 
-      device.attributes?.isMotionDetected !== undefined
-    ) {
+    // 2. CZUJNIK OBECNOŚCI (Czysty deviceType)
+    else if (deviceType === 'occupancySensor') {
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
   }
 
-  // Pomocnicza metoda bezpiecznego pobierania/tworzenia usługi
   getOrCreateService(accessory, serviceType, name) {
     let service = accessory.getService(serviceType);
     if (!service) {
@@ -106,27 +97,21 @@ class DirigeraCustomPlatform {
     return service;
   }
 
-  // Uzupełnianie informacji o urządzeniu (Manufacturer, Model, Serial Number, Firmware)
   updateAccessoryInformation(accessory, device) {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
     const infoService = accessory.getService(Service.AccessoryInformation);
 
     if (infoService) {
-      const manufacturer = device.attributes?.manufacturer || 'IKEA / Sonoff';
-      const model = device.attributes?.model || device.deviceType || 'Unknown Model';
-      const serialNumber = device.attributes?.serialNumber || device.id || 'Unknown SN';
-      const firmwareVersion = device.attributes?.firmwareVersion || '1.0.0';
-
       infoService
-        .setCharacteristic(Characteristic.Manufacturer, manufacturer)
-        .setCharacteristic(Characteristic.Model, model)
-        .setCharacteristic(Characteristic.SerialNumber, serialNumber)
-        .setCharacteristic(Characteristic.FirmwareRevision, firmwareVersion);
+        .setCharacteristic(Characteristic.Manufacturer, device.attributes?.manufacturer || 'IKEA / Sonoff')
+        .setCharacteristic(Characteristic.Model, device.attributes?.model || device.deviceType || 'Unknown')
+        .setCharacteristic(Characteristic.SerialNumber, device.attributes?.serialNumber || device.id)
+        .setCharacteristic(Characteristic.FirmwareRevision, device.attributes?.firmwareVersion || '1.0.0');
     }
   }
 
-  // --- 1. TERMOSTAT ---
+  // --- TERMOSTAT ---
   setupThermostat(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Termostat';
     const temp = device.attributes?.currentTemperature || 20;
@@ -138,12 +123,10 @@ class DirigeraCustomPlatform {
     let accessory = existingAccessory;
 
     if (!accessory) {
-      this.log.info(`Dodawanie Nowego Termostatu: ${name}`);
+      this.log.info(`Dodawanie Termostatu: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
       
       const thermostatService = accessory.addService(Service.Thermostat, name);
-      
-      // Domyślne wartości dla sztucznego termostatu
       thermostatService.setCharacteristic(Characteristic.TargetTemperature, 21);
       thermostatService.setCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
       thermostatService.setCharacteristic(Characteristic.TargetHeatingCoolingState, Characteristic.TargetHeatingCoolingState.OFF);
@@ -152,7 +135,6 @@ class DirigeraCustomPlatform {
       this.accessories.push(accessory);
     }
 
-    // Uaktualnij metadane urządzenia
     this.updateAccessoryInformation(accessory, device);
 
     const thermostatService = this.getOrCreateService(accessory, Service.Thermostat, name);
@@ -161,16 +143,12 @@ class DirigeraCustomPlatform {
     if (humidity !== undefined) {
       thermostatService.updateCharacteristic(Characteristic.CurrentRelativeHumidity, humidity);
     }
-
-    if (device.attributes?.batteryPercentage !== undefined) {
-      this.updateBattery(accessory, name, device.attributes.batteryPercentage);
-    }
   }
 
-  // --- 2. CZUJNIK OBECNOŚCI ---
+  // --- CZUJNIK OBECNOŚCI ---
   setupOccupancySensor(device, uuid, existingAccessory) {
-    const name = device.attributes?.customName || 'Czujnik Obecnosci';
-    const isDetected = device.attributes?.isDetected ?? device.attributes?.isMotionDetected ?? false;
+    const name = device.attributes?.customName || 'Czujnik Obecności';
+    const isDetected = device.attributes?.isDetected || false;
     
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
@@ -184,7 +162,6 @@ class DirigeraCustomPlatform {
       this.accessories.push(accessory);
     }
 
-    // Uaktualnij metadane urządzenia
     this.updateAccessoryInformation(accessory, device);
 
     const service = this.getOrCreateService(accessory, Service.OccupancySensor, name);
@@ -193,22 +170,5 @@ class DirigeraCustomPlatform {
       : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED;
 
     service.updateCharacteristic(Characteristic.OccupancyDetected, state);
-
-    if (device.attributes?.batteryPercentage !== undefined) {
-      this.updateBattery(accessory, name, device.attributes.batteryPercentage);
-    }
-  }
-
-  // --- BATERIA ---
-  updateBattery(accessory, name, level) {
-    const Service = this.api.hap.Service;
-    const Characteristic = this.api.hap.Characteristic;
-
-    const batteryService = this.getOrCreateService(accessory, Service.Battery, `${name} Bateria`);
-    batteryService.updateCharacteristic(Characteristic.BatteryLevel, level);
-    batteryService.updateCharacteristic(
-      Characteristic.StatusLowBattery, 
-      level < 20 ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-    );
   }
 }

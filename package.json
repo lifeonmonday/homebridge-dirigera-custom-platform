@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "Custom Homebridge platform for unsupported IKEA Dirigera Zigbee devices",
-  "author": "lifeonmonday",
+  "author": {
+    "name": "lifeonmonday"
+  },
   "main": "index.js",
   "keywords": [
     "homebridge-plugin"

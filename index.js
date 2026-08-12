@@ -18,7 +18,7 @@ class DirigeraCustomPlatform {
     this.pollInterval = (this.config.pollInterval || 3) * 1000;
 
     this.accessories = [];
-    this.lastButtonIsOn = {}; // Zapamiętanie stanu isOn dla przycisku Sonoff
+    this.lastButtonIsOn = {};
 
     if (!this.host || !this.token) {
       this.log.error('Brak hosta lub tokena Dirigery w konfiguracji!');
@@ -63,7 +63,7 @@ class DirigeraCustomPlatform {
             this.handleDevice(device);
           }
         } catch (err) {
-          this.log.error(`Błąd parsowania JSON: ${err.message}`);
+          this.log.error(`Błąd przetwarzania danych: ${err.message}`);
         }
       });
     });
@@ -83,7 +83,7 @@ class DirigeraCustomPlatform {
     const customName = (device.attributes?.customName || '').toLowerCase();
     const deviceType = (device.deviceType || '').toLowerCase();
 
-    // 1. CZUJNIK RUCHU (Motion Sensor) - sprawdzamy priorytetowo przed obecnością!
+    // 1. CZUJNIK RUCHU (Motion Sensor)
     if (
       deviceType.includes('motion') || 
       model.includes('motion') || 
@@ -104,8 +104,8 @@ class DirigeraCustomPlatform {
     else if (model.includes('snzb-01p') || customName.includes('button') || customName.includes('przycisk')) {
       this.setupSonoffButton(device, uuid, existingAccessory);
     }
-    // 5. ŻARÓWKA / ŚCIEMNIACZ / PRZEŁĄCZNIK ŚWIATŁA
-    else if (device.type === 'light' || (device.attributes?.isOn !== undefined && deviceType === 'lightcontroller' === false)) {
+    // 5. ŻARÓWKA / ŚCIEMNIACZ
+    else if (device.type === 'light' || (device.attributes?.isOn !== undefined && deviceType !== 'lightcontroller')) {
       this.setupLightbulb(device, uuid, existingAccessory);
     }
     // 6. TERMOSTAT / CZUJNIK TEMPERATURY
@@ -114,10 +114,18 @@ class DirigeraCustomPlatform {
     }
   }
 
-  // --- CZUJNIK RUCHU (MOTION SENSOR) ---
+  // Pomocnicza bezpieczna metoda pobierania/tworzenia serwisu
+  getOrCreateService(accessory, serviceType, name) {
+    let service = accessory.getService(serviceType);
+    if (!service) {
+      service = accessory.addService(serviceType, name);
+    }
+    return service;
+  }
+
+  // --- CZUJNIK RUCHU ---
   setupMotionSensor(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Czujnik Ruchu';
-    // Pobieramy wykrycie z isMotionDetected lub awaryjnie z isDetected
     const motionDetected = device.attributes?.isMotionDetected ?? device.attributes?.isDetected ?? false;
     
     const Service = this.api.hap.Service;
@@ -128,21 +136,19 @@ class DirigeraCustomPlatform {
     if (!accessory) {
       this.log.info(`Dodawanie CZUJNIKA RUCHU: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
-      accessory.addService(Service.MotionSensor, name);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
 
-    const service = accessory.getService(Service.MotionSensor);
+    const service = this.getOrCreateService(accessory, Service.MotionSensor, name);
     service.updateCharacteristic(Characteristic.MotionDetected, Boolean(motionDetected));
 
-    // Bateria w czujniku
     if (device.attributes?.batteryPercentage !== undefined) {
       this.updateBattery(accessory, name, device.attributes.batteryPercentage);
     }
   }
 
-  // --- CZUJNIK OBECNOŚCI (OCCUPANCY SENSOR) ---
+  // --- CZUJNIK OBECNOŚCI ---
   setupOccupancySensor(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Czujnik Obecnosci';
     const isDetected = device.attributes?.isDetected || false;
@@ -154,12 +160,11 @@ class DirigeraCustomPlatform {
     if (!accessory) {
       this.log.info(`Dodawanie czujnika obecności: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
-      accessory.addService(Service.OccupancySensor, name);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
 
-    const service = accessory.getService(Service.OccupancySensor);
+    const service = this.getOrCreateService(accessory, Service.OccupancySensor, name);
     const state = isDetected 
       ? Characteristic.OccupancyDetected.OCCUPANCY_DETECTED 
       : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED;
@@ -182,19 +187,16 @@ class DirigeraCustomPlatform {
     if (!accessory) {
       this.log.info(`Dodawanie PRZYCISKU SONOFF: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
-      
-      const btnService = accessory.addService(Service.StatelessProgrammableSwitch, name);
-      btnService.getCharacteristic(Characteristic.ServiceLabelIndex).setValue(1);
-
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
 
-    // Wykrywanie kliknięcia po zmianie wartości isOn w API
+    const btnService = this.getOrCreateService(accessory, Service.StatelessProgrammableSwitch, name);
+
+    // Wykrywanie kliknięcia po zmianie pola isOn
     const currentIsOn = device.attributes?.isOn;
     if (this.lastButtonIsOn[device.id] !== undefined && this.lastButtonIsOn[device.id] !== currentIsOn) {
       this.log.info(`Naciśnięto przycisk ${name}!`);
-      const btnService = accessory.getService(Service.StatelessProgrammableSwitch);
       btnService.updateCharacteristic(
         Characteristic.ProgrammableSwitchEvent, 
         Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS
@@ -202,7 +204,6 @@ class DirigeraCustomPlatform {
     }
     this.lastButtonIsOn[device.id] = currentIsOn;
 
-    // Poziom baterii (100%)
     if (device.attributes?.batteryPercentage !== undefined) {
       this.updateBattery(accessory, name, device.attributes.batteryPercentage);
     }
@@ -220,16 +221,15 @@ class DirigeraCustomPlatform {
     if (!accessory) {
       this.log.info(`Dodawanie czujnika światła: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
-      accessory.addService(Service.LightSensor, name);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
 
-    const service = accessory.getService(Service.LightSensor);
+    const service = this.getOrCreateService(accessory, Service.LightSensor, name);
     service.updateCharacteristic(Characteristic.CurrentAmbientLightLevel, lux);
   }
 
-  // --- ŻARÓWKA / ŚWIATŁO ---
+  // --- ŻARÓWKA ---
   setupLightbulb(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Światło Dirigera';
     const Service = this.api.hap.Service;
@@ -240,21 +240,24 @@ class DirigeraCustomPlatform {
     if (!accessory) {
       this.log.info(`Dodawanie żarówki: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
-      const lightService = accessory.addService(Service.Lightbulb, name);
-
-      lightService.getCharacteristic(Characteristic.On)
-        .onSet((value) => this.sendDeviceCommand(device.id, [{ attributes: { isOn: value } }]));
-
-      if (device.attributes?.lightLevel !== undefined) {
-        lightService.getCharacteristic(Characteristic.Brightness)
-          .onSet((value) => this.sendDeviceCommand(device.id, [{ attributes: { lightLevel: value } }]));
-      }
-
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
 
-    const lightService = accessory.getService(Service.Lightbulb);
+    const lightService = this.getOrCreateService(accessory, Service.Lightbulb, name);
+
+    // Obsługa zdarzeń ze strony HomeKita (Set)
+    if (!lightService.getCharacteristic(Characteristic.On).listeners('set').length) {
+      lightService.getCharacteristic(Characteristic.On)
+        .onSet((value) => this.sendDeviceCommand(device.id, [{ attributes: { isOn: value } }]));
+    }
+
+    if (device.attributes?.lightLevel !== undefined) {
+      if (!lightService.getCharacteristic(Characteristic.Brightness).listeners('set').length) {
+        lightService.getCharacteristic(Characteristic.Brightness)
+          .onSet((value) => this.sendDeviceCommand(device.id, [{ attributes: { lightLevel: value } }]));
+      }
+    }
 
     if (device.attributes?.isOn !== undefined) {
       lightService.updateCharacteristic(Characteristic.On, device.attributes.isOn);
@@ -279,18 +282,11 @@ class DirigeraCustomPlatform {
     if (!accessory) {
       this.log.info(`Dodawanie nowego termostatu: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
-      
-      const thermostatService = accessory.addService(Service.Thermostat, name);
-      
-      thermostatService.setCharacteristic(Characteristic.TargetTemperature, 21);
-      thermostatService.setCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
-      thermostatService.setCharacteristic(Characteristic.TargetHeatingCoolingState, Characteristic.TargetHeatingCoolingState.OFF);
-
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
 
-    const thermostatService = accessory.getService(Service.Thermostat);
+    const thermostatService = this.getOrCreateService(accessory, Service.Thermostat, name);
     thermostatService.updateCharacteristic(Characteristic.CurrentTemperature, temp);
 
     if (humidity !== undefined) {
@@ -302,15 +298,12 @@ class DirigeraCustomPlatform {
     }
   }
 
-  // --- POMOCNICZA FUNKCJA DLA BATERII ---
+  // --- BATERIA ---
   updateBattery(accessory, name, level) {
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
-    let batteryService = accessory.getService(Service.Battery);
-    if (!batteryService) {
-      batteryService = accessory.addService(Service.Battery, `${name} Bateria`);
-    }
+    const batteryService = this.getOrCreateService(accessory, Service.Battery, `${name} Bateria`);
     batteryService.updateCharacteristic(Characteristic.BatteryLevel, level);
     batteryService.updateCharacteristic(
       Characteristic.StatusLowBattery, 
@@ -318,7 +311,7 @@ class DirigeraCustomPlatform {
     );
   }
 
-  // --- WYSYŁANIE KOMEND DO DIRIGERY ---
+  // --- WYSYŁANIE COMMAND DLA DIRIGERY ---
   sendDeviceCommand(deviceId, patchData) {
     const payload = JSON.stringify(patchData);
     const options = {

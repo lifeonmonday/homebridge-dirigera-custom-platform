@@ -15,10 +15,10 @@ class DirigeraCustomPlatform {
 
     this.host = this.config.host;
     this.token = this.config.token;
-    this.pollInterval = (this.config.pollInterval || 5) * 1000;
+    this.pollInterval = (this.config.pollInterval || 3) * 1000;
 
     this.accessories = [];
-    this.lastButtonStates = {}; // Pamięć podręczna do śledzenia zmian stanu przycisków
+    this.lastButtonIsOn = {}; // Zapamiętanie stanu isOn dla przycisku Sonoff
 
     if (!this.host || !this.token) {
       this.log.error('Brak hosta lub tokena Dirigery w konfiguracji!');
@@ -79,28 +79,70 @@ class DirigeraCustomPlatform {
     const uuid = this.api.hap.uuid.generate(device.id);
     const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
 
-    // 1. CZUJNIK OBECNOŚCI (np. Sonoff SNZB-06P)
-    if (device.deviceType === 'occupancySensor') {
+    const model = (device.attributes?.model || '').toLowerCase();
+    const customName = (device.attributes?.customName || '').toLowerCase();
+    const deviceType = (device.deviceType || '').toLowerCase();
+
+    // 1. CZUJNIK RUCHU (Motion Sensor) - sprawdzamy priorytetowo przed obecnością!
+    if (
+      deviceType.includes('motion') || 
+      model.includes('motion') || 
+      customName.includes('motion') || 
+      device.attributes?.isMotionDetected !== undefined
+    ) {
+      this.setupMotionSensor(device, uuid, existingAccessory);
+    }
+    // 2. CZUJNIK OBECNOŚCI (Occupancy Sensor)
+    else if (deviceType === 'occupancysensor' || device.attributes?.isDetected !== undefined) {
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
-    // 2. CZUJNIK NATĘŻENIA ŚWIATŁA
-    else if (device.deviceType === 'lightSensor' || device.attributes?.illuminance !== undefined) {
+    // 3. CZUJNIK NATĘŻENIA ŚWIATŁA
+    else if (deviceType === 'lightsensor' || device.attributes?.illuminance !== undefined) {
       this.setupLightSensor(device, uuid, existingAccessory);
     }
-    // 3. PILOT / KONTROLER (np. IKEA RODRET) -> Programowalny Przycisk HomeKit
-    else if (device.type === 'controller' || device.deviceType === 'lightController') {
-      this.setupButtonController(device, uuid, existingAccessory);
+    // 4. PRZYCISK SONOFF (SNZB-01P)
+    else if (model.includes('snzb-01p') || customName.includes('button') || customName.includes('przycisk')) {
+      this.setupSonoffButton(device, uuid, existingAccessory);
     }
-    // 4. ŻARÓWKA / ŚCIEMNIACZ (Żarówki Sonoff / IKEA)
-    else if (device.type === 'light' || device.attributes?.isOn !== undefined) {
+    // 5. ŻARÓWKA / ŚCIEMNIACZ / PRZEŁĄCZNIK ŚWIATŁA
+    else if (device.type === 'light' || (device.attributes?.isOn !== undefined && deviceType === 'lightcontroller' === false)) {
       this.setupLightbulb(device, uuid, existingAccessory);
     }
-    // 5. TERMOSTAT / CZUJNIK TEMPERATURY
+    // 6. TERMOSTAT / CZUJNIK TEMPERATURY
     else if (device.attributes?.currentTemperature !== undefined) {
       this.setupThermostat(device, uuid, existingAccessory);
     }
   }
 
+  // --- CZUJNIK RUCHU (MOTION SENSOR) ---
+  setupMotionSensor(device, uuid, existingAccessory) {
+    const name = device.attributes?.customName || 'Czujnik Ruchu';
+    // Pobieramy wykrycie z isMotionDetected lub awaryjnie z isDetected
+    const motionDetected = device.attributes?.isMotionDetected ?? device.attributes?.isDetected ?? false;
+    
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    let accessory = existingAccessory;
+
+    if (!accessory) {
+      this.log.info(`Dodawanie CZUJNIKA RUCHU: ${name}`);
+      accessory = new this.api.platformAccessory(name, uuid);
+      accessory.addService(Service.MotionSensor, name);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+    }
+
+    const service = accessory.getService(Service.MotionSensor);
+    service.updateCharacteristic(Characteristic.MotionDetected, Boolean(motionDetected));
+
+    // Bateria w czujniku
+    if (device.attributes?.batteryPercentage !== undefined) {
+      this.updateBattery(accessory, name, device.attributes.batteryPercentage);
+    }
+  }
+
+  // --- CZUJNIK OBECNOŚCI (OCCUPANCY SENSOR) ---
   setupOccupancySensor(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Czujnik Obecnosci';
     const isDetected = device.attributes?.isDetected || false;
@@ -110,7 +152,7 @@ class DirigeraCustomPlatform {
     let accessory = existingAccessory;
 
     if (!accessory) {
-      this.log.info(`Dodawanie nowego czujnika obecności: ${name}`);
+      this.log.info(`Dodawanie czujnika obecności: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
       accessory.addService(Service.OccupancySensor, name);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
@@ -123,8 +165,50 @@ class DirigeraCustomPlatform {
       : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED;
 
     service.updateCharacteristic(Characteristic.OccupancyDetected, state);
+
+    if (device.attributes?.batteryPercentage !== undefined) {
+      this.updateBattery(accessory, name, device.attributes.batteryPercentage);
+    }
   }
 
+  // --- PRZYCISK SONOFF (SNZB-01P) ---
+  setupSonoffButton(device, uuid, existingAccessory) {
+    const name = device.attributes?.customName || 'Sonoff Button';
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    let accessory = existingAccessory;
+
+    if (!accessory) {
+      this.log.info(`Dodawanie PRZYCISKU SONOFF: ${name}`);
+      accessory = new this.api.platformAccessory(name, uuid);
+      
+      const btnService = accessory.addService(Service.StatelessProgrammableSwitch, name);
+      btnService.getCharacteristic(Characteristic.ServiceLabelIndex).setValue(1);
+
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+    }
+
+    // Wykrywanie kliknięcia po zmianie wartości isOn w API
+    const currentIsOn = device.attributes?.isOn;
+    if (this.lastButtonIsOn[device.id] !== undefined && this.lastButtonIsOn[device.id] !== currentIsOn) {
+      this.log.info(`Naciśnięto przycisk ${name}!`);
+      const btnService = accessory.getService(Service.StatelessProgrammableSwitch);
+      btnService.updateCharacteristic(
+        Characteristic.ProgrammableSwitchEvent, 
+        Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS
+      );
+    }
+    this.lastButtonIsOn[device.id] = currentIsOn;
+
+    // Poziom baterii (100%)
+    if (device.attributes?.batteryPercentage !== undefined) {
+      this.updateBattery(accessory, name, device.attributes.batteryPercentage);
+    }
+  }
+
+  // --- CZUJNIK ŚWIATŁA ---
   setupLightSensor(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Czujnik Swiatla';
     const lux = Math.max(device.attributes?.illuminance || 0.0001, 0.0001);
@@ -145,53 +229,7 @@ class DirigeraCustomPlatform {
     service.updateCharacteristic(Characteristic.CurrentAmbientLightLevel, lux);
   }
 
-  setupButtonController(device, uuid, existingAccessory) {
-    const name = device.attributes?.customName || 'Pilot RODRET';
-    const battery = device.attributes?.batteryPercentage;
-    const Service = this.api.hap.Service;
-    const Characteristic = this.api.hap.Characteristic;
-
-    let accessory = existingAccessory;
-
-    if (!accessory) {
-      this.log.info(`Dodawanie pilota/przycisku: ${name}`);
-      accessory = new this.api.platformAccessory(name, uuid);
-      
-      // Tworzymy serwis programowalnego przycisku
-      const btnService = accessory.addService(Service.StatelessProgrammableSwitch, name);
-      btnService.getCharacteristic(Characteristic.ServiceLabelIndex).setValue(1);
-
-      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      this.accessories.push(accessory);
-    }
-
-    // Obsługa poziomu baterii pilota RODRET
-    if (battery !== undefined) {
-      let batteryService = accessory.getService(Service.Battery);
-      if (!batteryService) {
-        batteryService = accessory.addService(Service.Battery, `${name} Bateria`);
-      }
-      batteryService.updateCharacteristic(Characteristic.BatteryLevel, battery);
-      batteryService.updateCharacteristic(
-        Characteristic.StatusLowBattery, 
-        battery < 20 ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-      );
-    }
-
-    // Wykrywanie kliknięcia przycisku na podstawie zmiany stanu w API
-    const currentState = JSON.stringify({ isOn: device.attributes?.isOn, lightLevel: device.attributes?.lightLevel });
-    const previousState = this.lastButtonStates[device.id];
-
-    if (previousState && previousState !== currentState) {
-      this.log.info(`Wykryto naciśnięcie przycisku na pilocie ${name}!`);
-      const btnService = accessory.getService(Service.StatelessProgrammableSwitch);
-      // Wysyła zdarzenie pojedynczego kliknięcia do Apple Home
-      btnService.updateCharacteristic(Characteristic.ProgrammableSwitchEvent, Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS);
-    }
-
-    this.lastButtonStates[device.id] = currentState;
-  }
-
+  // --- ŻARÓWKA / ŚWIATŁO ---
   setupLightbulb(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Światło Dirigera';
     const Service = this.api.hap.Service;
@@ -227,11 +265,11 @@ class DirigeraCustomPlatform {
     }
   }
 
+  // --- TERMOSTAT ---
   setupThermostat(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Termostat Sonoff';
     const temp = device.attributes?.currentTemperature || 20;
     const humidity = device.attributes?.currentRH;
-    const battery = device.attributes?.batteryPercentage;
 
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
@@ -259,19 +297,28 @@ class DirigeraCustomPlatform {
       thermostatService.updateCharacteristic(Characteristic.CurrentRelativeHumidity, humidity);
     }
 
-    if (battery !== undefined) {
-      let batteryService = accessory.getService(Service.Battery);
-      if (!batteryService) {
-        batteryService = accessory.addService(Service.Battery, `${name} Bateria`);
-      }
-      batteryService.updateCharacteristic(Characteristic.BatteryLevel, battery);
-      batteryService.updateCharacteristic(
-        Characteristic.StatusLowBattery, 
-        battery < 20 ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-      );
+    if (device.attributes?.batteryPercentage !== undefined) {
+      this.updateBattery(accessory, name, device.attributes.batteryPercentage);
     }
   }
 
+  // --- POMOCNICZA FUNKCJA DLA BATERII ---
+  updateBattery(accessory, name, level) {
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    let batteryService = accessory.getService(Service.Battery);
+    if (!batteryService) {
+      batteryService = accessory.addService(Service.Battery, `${name} Bateria`);
+    }
+    batteryService.updateCharacteristic(Characteristic.BatteryLevel, level);
+    batteryService.updateCharacteristic(
+      Characteristic.StatusLowBattery, 
+      level < 20 ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
+    );
+  }
+
+  // --- WYSYŁANIE KOMEND DO DIRIGERY ---
   sendDeviceCommand(deviceId, patchData) {
     const payload = JSON.stringify(patchData);
     const options = {

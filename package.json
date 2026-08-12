@@ -1,0 +1,14 @@
+{
+  "name": "homebridge-dirigera-custom-platform",
+  "version": "1.0.0",
+  "description": "Custom Homebridge platform for unsupported IKEA Dirigera Zigbee devices",
+  "main": "index.js",
+  "keywords": [
+    "homebridge-plugin"
+  ],
+  "engines": {
+    "node": ">=18.0.0",
+    "homebridge": ">=1.6.0"
+  },
+  "dependencies": {}
+}

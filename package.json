@@ -10,5 +10,8 @@
     "node": ">=18.0.0",
     "homebridge": ">=1.6.0"
   },
-  "dependencies": {}
+  "homebridgePlugin": {
+    "pluginType": "platform",
+    "pluginName": "homebridge-dirigera-custom-platform"
+  }
 }

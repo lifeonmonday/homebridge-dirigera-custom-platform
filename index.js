@@ -1,4 +1,5 @@
 const https = require('https');
+const WebSocket = require('ws');
 
 const PLUGIN_NAME = 'homebridge-dirigera-custom-platform';
 const PLATFORM_NAME = 'DirigeraCustomPlatform';
@@ -18,6 +19,7 @@ class DirigeraCustomPlatform {
     this.pollInterval = (this.config.pollInterval || 5) * 1000;
 
     this.accessories = [];
+    this.ws = null;
 
     if (!this.host || !this.token) {
       this.log.error('Brak hosta lub tokena Dirigery w konfiguracji!');
@@ -25,8 +27,12 @@ class DirigeraCustomPlatform {
     }
 
     this.api.on('didFinishLaunching', () => {
+      // Periodic fetch for stateful devices (Thermostat, Occupancy Sensor)
       this.fetchAndProcessDevices();
       setInterval(() => this.fetchAndProcessDevices(), this.pollInterval);
+
+      // WebSocket connection for real-time button events
+      this.initWebSocket();
     });
   }
 
@@ -34,6 +40,72 @@ class DirigeraCustomPlatform {
     this.accessories.push(accessory);
   }
 
+  // --- WEBSOCKET FOR REAL-TIME BUTTON EVENTS ---
+  initWebSocket() {
+    const wsUrl = `wss://${this.host}:8443/v1/subscribe`;
+
+    this.ws = new WebSocket(wsUrl, {
+      headers: {
+        'Authorization': `Bearer ${this.token}`
+      },
+      rejectUnauthorized: false
+    });
+
+    this.ws.on('open', () => {
+      this.log.info('Połączono ze strumieniem zdarzeń WebSocket Dirigery!');
+    });
+
+    this.ws.on('message', (data) => {
+      try {
+        const event = JSON.parse(data);
+
+        // Capture button events from remotes
+        if (event.type === 'remotePressEvent' && event.data?.id) {
+          this.handleRemotePress(event.data.id, event.data.clickPattern);
+        }
+      } catch (err) {
+        this.log.error(`Błąd dekodowania zdarzenia WS: ${err.message}`);
+      }
+    });
+
+    this.ws.on('error', (err) => {
+      this.log.error(`Błąd połączenia WebSocket: ${err.message}`);
+    });
+
+    this.ws.on('close', () => {
+      this.log.warn('WebSocket zamknięty. Ponowne łączenie za 5s...');
+      setTimeout(() => this.initWebSocket(), 5000);
+    });
+  }
+
+  handleRemotePress(deviceId, clickPattern) {
+    const uuid = this.api.hap.uuid.generate(deviceId);
+    const accessory = this.accessories.find(acc => acc.UUID === uuid);
+
+    if (!accessory) return;
+
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+    const buttonService = accessory.getService(Service.StatelessProgrammableSwitch);
+
+    if (!buttonService) return;
+
+    let eventValue;
+    if (clickPattern === 'singlePress') {
+      eventValue = Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS;
+    } else if (clickPattern === 'doublePress') {
+      eventValue = Characteristic.ProgrammableSwitchEvent.DOUBLE_PRESS;
+    } else if (clickPattern === 'longPress') {
+      eventValue = Characteristic.ProgrammableSwitchEvent.LONG_PRESS;
+    }
+
+    if (eventValue !== undefined) {
+      this.log.info(`Pilot ${accessory.displayName}: ${clickPattern}`);
+      buttonService.updateCharacteristic(Characteristic.ProgrammableSwitchEvent, eventValue);
+    }
+  }
+
+  // --- HTTP REST API FETCHING ---
   fetchAndProcessDevices() {
     const options = {
       hostname: this.host,
@@ -87,7 +159,7 @@ class DirigeraCustomPlatform {
     else if (deviceType === 'occupancySensor') {
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
-    // 3. PILOT DŹWIĘKOWY / SOUND CONTROLLER (jako Ściemniacz)
+    // 3. PILOT DŹWIĘKOWY / SOUND CONTROLLER (jako Przycisk HomeKit)
     else if (deviceType === 'soundController') {
       this.setupSoundController(device, uuid, existingAccessory);
     }
@@ -137,16 +209,13 @@ class DirigeraCustomPlatform {
 
     const thermostatService = this.getOrCreateService(accessory, Service.Thermostat, name);
 
-    // Domyślne wartości dla sztucznego termostatu
     thermostatService.setCharacteristic(Characteristic.TargetTemperature, 21);
 
-    // Zablokowanie wyboru trybów pracy tylko do OFF
     thermostatService.getCharacteristic(Characteristic.TargetHeatingCoolingState)
       .setProps({
         validValues: [Characteristic.TargetHeatingCoolingState.OFF]
       });
 
-    // Ignorowanie prób zmiany stanu przez użytkownika
     if (!thermostatService.getCharacteristic(Characteristic.TargetHeatingCoolingState).listeners('set').length) {
       thermostatService.getCharacteristic(Characteristic.TargetHeatingCoolingState)
         .onSet(() => {
@@ -157,11 +226,9 @@ class DirigeraCustomPlatform {
         });
     }
 
-    // Wymuszenie stałego stanu OFF
     thermostatService.updateCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
     thermostatService.updateCharacteristic(Characteristic.TargetHeatingCoolingState, Characteristic.TargetHeatingCoolingState.OFF);
 
-    // Aktualizacja odczytów środowiskowych
     thermostatService.updateCharacteristic(Characteristic.CurrentTemperature, temp);
 
     if (humidity !== undefined) {
@@ -173,7 +240,7 @@ class DirigeraCustomPlatform {
   setupOccupancySensor(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Czujnik Obecności';
     const isDetected = device.attributes?.isDetected || false;
-    
+
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
@@ -196,14 +263,9 @@ class DirigeraCustomPlatform {
     service.updateCharacteristic(Characteristic.OccupancyDetected, state);
   }
 
-
-  // --- OBSŁUGA PILOTA SOUND CONTROLLER (NADAJNIK) ---
+  // --- PILOT SOUND CONTROLLER (PROGRAMMABLE SWITCH) ---
   setupSoundController(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Remote 10';
-    
-    // Pobieramy stany wysłane przez pilot (canSend)
-    const isOn = device.attributes?.isOn ?? false;
-    const lightLevel = device.attributes?.lightLevel ?? 100;
 
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
@@ -211,31 +273,23 @@ class DirigeraCustomPlatform {
     let accessory = existingAccessory;
 
     if (!accessory) {
-      this.log.info(`Rejestracja nadajnika Sound Controller: ${name}`);
+      this.log.info(`Rejestracja pilota SYMFONISK: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
+
+      const buttonService = accessory.addService(Service.StatelessProgrammableSwitch, name);
+      buttonService.getCharacteristic(Characteristic.ProgrammableSwitchEvent)
+        .setProps({
+          validValues: [
+            Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS,
+            Characteristic.ProgrammableSwitchEvent.DOUBLE_PRESS,
+            Characteristic.ProgrammableSwitchEvent.LONG_PRESS,
+          ]
+        });
+
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
     }
 
     this.updateAccessoryInformation(accessory, device);
-
-    const lightService = this.getOrCreateService(accessory, Service.Lightbulb, name);
-
-    // Przekazujemy odebrany stan 'isOn' do HomeKit
-    lightService.updateCharacteristic(Characteristic.On, isOn);
-
-    // Przekazujemy odebrany poziom 'lightLevel' jako jasność do HomeKit
-    lightService.updateCharacteristic(Characteristic.Brightness, lightLevel);
-
-    // Opcjonalnie: Ignorujemy próby sterowania tym pilotem z poziomu aplikacji Dom,
-    // ponieważ pilot tylko wysyła stany (canSend), a nie odbiera (canReceive).
-    if (!lightService.getCharacteristic(Characteristic.On).listeners('set').length) {
-      lightService.getCharacteristic(Characteristic.On).onSet(() => {
-        // Przywracamy poprzedni stan, bo pilot nie odbiera rozkazów
-        setTimeout(() => {
-          lightService.updateCharacteristic(Characteristic.On, isOn);
-        }, 50);
-      });
-    }
   }
 }

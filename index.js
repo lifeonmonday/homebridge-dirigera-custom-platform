@@ -87,6 +87,10 @@ class DirigeraCustomPlatform {
     else if (deviceType === 'occupancySensor') {
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
+    // 3. PILOT DŹWIĘKOWY / SOUND CONTROLLER (jako Ściemniacz)
+    else if (deviceType === 'soundController') {
+      this.setupSoundController(device, uuid, existingAccessory);
+    }
   }
 
   getOrCreateService(accessory, serviceType, name) {
@@ -190,5 +194,35 @@ class DirigeraCustomPlatform {
       : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED;
 
     service.updateCharacteristic(Characteristic.OccupancyDetected, state);
+  }
+
+
+  // --- OBSŁUGA PILOTA SOUND CONTROLLER ---
+  setupSoundController(device, uuid, existingAccessory) {
+    const name = device.attributes?.customName || 'Remote 10';
+    const isOn = device.attributes?.isOn ?? false;
+    const lightLevel = device.attributes?.lightLevel ?? 100;
+
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    let accessory = existingAccessory;
+
+    if (!accessory) {
+      this.log.info(`Dodawanie pilota Sound Controller: ${name}`);
+      accessory = new this.api.platformAccessory(name, uuid);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+    }
+
+    this.updateAccessoryInformation(accessory, device);
+
+    const lightService = this.getOrCreateService(accessory, Service.Lightbulb, name);
+
+    // Rejestracja stany ON / OFF
+    lightService.updateCharacteristic(Characteristic.On, isOn);
+
+    // Rejestracja poziomu jasności / głośności (lightLevel)
+    lightService.updateCharacteristic(Characteristic.Brightness, lightLevel);
   }
 }

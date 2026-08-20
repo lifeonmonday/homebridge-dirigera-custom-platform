@@ -7,6 +7,9 @@
     "name": "lifeonmonday"
   },
   "main": "index.js",
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
   "keywords": [
     "homebridge-plugin"
   ],

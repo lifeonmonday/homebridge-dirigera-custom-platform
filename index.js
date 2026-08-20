@@ -27,11 +27,11 @@ class DirigeraCustomPlatform {
     }
 
     this.api.on('didFinishLaunching', () => {
-      // Periodic fetch for stateful devices (Thermostat, Occupancy Sensor)
+      // Cykliczne pobieranie stanu (termostat, czujnik obecności)
       this.fetchAndProcessDevices();
       setInterval(() => this.fetchAndProcessDevices(), this.pollInterval);
 
-      // WebSocket connection for real-time button events
+      // WebSocket dla zdarzeń przycisków w czasie rzeczywistym
       this.initWebSocket();
     });
   }
@@ -40,7 +40,7 @@ class DirigeraCustomPlatform {
     this.accessories.push(accessory);
   }
 
-  // --- WEBSOCKET FOR REAL-TIME BUTTON EVENTS ---
+  // --- OBSŁUGA STRUMIENIA WEBSOCKET ---
   initWebSocket() {
     const wsUrl = `wss://${this.host}:8443/v1/subscribe`;
 
@@ -59,7 +59,7 @@ class DirigeraCustomPlatform {
       try {
         const event = JSON.parse(data);
 
-        // Capture button events from remotes
+        // Prchwytywanie kliknięć z pilotów
         if (event.type === 'remotePressEvent' && event.data?.id) {
           this.handleRemotePress(event.data.id, event.data.clickPattern);
         }
@@ -93,8 +93,6 @@ class DirigeraCustomPlatform {
     let eventValue;
     if (clickPattern === 'singlePress') {
       eventValue = Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS;
-    } else if (clickPattern === 'doublePress') {
-      eventValue = Characteristic.ProgrammableSwitchEvent.DOUBLE_PRESS;
     } else if (clickPattern === 'longPress') {
       eventValue = Characteristic.ProgrammableSwitchEvent.LONG_PRESS;
     }
@@ -105,7 +103,7 @@ class DirigeraCustomPlatform {
     }
   }
 
-  // --- HTTP REST API FETCHING ---
+  // --- ODYT URZĄDZEŃ PRZEZ REST API ---
   fetchAndProcessDevices() {
     const options = {
       hostname: this.host,
@@ -159,9 +157,9 @@ class DirigeraCustomPlatform {
     else if (deviceType === 'occupancySensor') {
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
-    // 3. PILOT DŹWIĘKOWY / SOUND CONTROLLER (jako Przycisk HomeKit)
-    else if (deviceType === 'soundController') {
-      this.setupSoundController(device, uuid, existingAccessory);
+    // 3. PILOTY (SYMFONISK, RODRET, SONOFF - soundController / lightController)
+    else if (deviceType === 'soundController' || deviceType === 'lightController') {
+      this.setupButton(device, uuid, existingAccessory);
     }
   }
 
@@ -263,9 +261,9 @@ class DirigeraCustomPlatform {
     service.updateCharacteristic(Characteristic.OccupancyDetected, state);
   }
 
-  // --- PILOT SOUND CONTROLLER (PROGRAMMABLE SWITCH) ---
-  setupSoundController(device, uuid, existingAccessory) {
-    const name = device.attributes?.customName || 'Remote 10';
+  // --- PILOTY (PROGRAMMABLE SWITCH) ---
+  setupButton(device, uuid, existingAccessory) {
+    const name = device.attributes?.customName || 'Przycisk Bezprzewodowy';
 
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
@@ -273,7 +271,7 @@ class DirigeraCustomPlatform {
     let accessory = existingAccessory;
 
     if (!accessory) {
-      this.log.info(`Rejestracja pilota SYMFONISK: ${name}`);
+      this.log.info(`Rejestracja pilota: ${name} (${device.deviceType})`);
       accessory = new this.api.platformAccessory(name, uuid);
 
       const buttonService = accessory.addService(Service.StatelessProgrammableSwitch, name);
@@ -281,7 +279,6 @@ class DirigeraCustomPlatform {
         .setProps({
           validValues: [
             Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS,
-            Characteristic.ProgrammableSwitchEvent.DOUBLE_PRESS,
             Characteristic.ProgrammableSwitchEvent.LONG_PRESS,
           ]
         });

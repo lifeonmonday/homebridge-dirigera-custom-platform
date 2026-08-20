@@ -103,7 +103,7 @@ class DirigeraCustomPlatform {
     }
   }
 
-  // --- ODYT URZĄDZEŃ PRZEZ REST API ---
+  // --- ODCZYT URZĄDZEŃ PRZEZ REST API ---
   fetchAndProcessDevices() {
     const options = {
       hostname: this.host,
@@ -148,6 +148,7 @@ class DirigeraCustomPlatform {
     const uuid = this.api.hap.uuid.generate(device.id);
     const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
     const deviceType = device.deviceType;
+    const model = device.attributes?.model;
 
     // 1. TERMOSTAT (Z czujnika temperatury)
     if (device.attributes?.currentTemperature !== undefined) {
@@ -157,8 +158,8 @@ class DirigeraCustomPlatform {
     else if (deviceType === 'occupancySensor') {
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
-    // 3. PILOTY (SYMFONISK, RODRET, SONOFF - soundController / lightController)
-    else if (deviceType === 'soundController' || deviceType === 'lightController') {
+    // 3. PILOTY: soundController LUB konkretny Sonoff (SNZB-01P)
+    else if (deviceType === 'soundController' || (deviceType === 'lightController' && model === 'SNZB-01P')) {
       this.setupButton(device, uuid, existingAccessory);
     }
   }
@@ -187,7 +188,7 @@ class DirigeraCustomPlatform {
 
   // --- TERMOSTAT ---
   setupThermostat(device, uuid, existingAccessory) {
-    const name = device.attributes?.customName || 'Termostat';
+    const name = device.attributes?.customName || 'Thermostat';
     const temp = device.attributes?.currentTemperature || 20;
     const humidity = device.attributes?.currentRH;
 
@@ -236,7 +237,7 @@ class DirigeraCustomPlatform {
 
   // --- CZUJNIK OBECNOŚCI ---
   setupOccupancySensor(device, uuid, existingAccessory) {
-    const name = device.attributes?.customName || 'Czujnik Obecności';
+    const name = device.attributes?.customName || 'Occupancy Sensor';
     const isDetected = device.attributes?.isDetected || false;
 
     const Service = this.api.hap.Service;
@@ -263,7 +264,7 @@ class DirigeraCustomPlatform {
 
   // --- PILOTY (PROGRAMMABLE SWITCH) ---
   setupButton(device, uuid, existingAccessory) {
-    const name = device.attributes?.customName || 'Przycisk Bezprzewodowy';
+    const name = device.attributes?.customName || 'Wireless Switch';
 
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
@@ -271,7 +272,7 @@ class DirigeraCustomPlatform {
     let accessory = existingAccessory;
 
     if (!accessory) {
-      this.log.info(`Rejestracja pilota: ${name} (${device.deviceType})`);
+      this.log.info(`Rejestracja pilota: ${name} (${device.attributes?.model || device.deviceType})`);
       accessory = new this.api.platformAccessory(name, uuid);
 
       const buttonService = accessory.addService(Service.StatelessProgrammableSwitch, name);

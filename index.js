@@ -197,9 +197,11 @@ class DirigeraCustomPlatform {
   }
 
 
-  // --- OBSŁUGA PILOTA SOUND CONTROLLER ---
+  // --- OBSŁUGA PILOTA SOUND CONTROLLER (NADAJNIK) ---
   setupSoundController(device, uuid, existingAccessory) {
     const name = device.attributes?.customName || 'Remote 10';
+    
+    // Pobieramy stany wysłane przez pilot (canSend)
     const isOn = device.attributes?.isOn ?? false;
     const lightLevel = device.attributes?.lightLevel ?? 100;
 
@@ -209,7 +211,7 @@ class DirigeraCustomPlatform {
     let accessory = existingAccessory;
 
     if (!accessory) {
-      this.log.info(`Dodawanie pilota Sound Controller: ${name}`);
+      this.log.info(`Rejestracja nadajnika Sound Controller: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);
@@ -219,10 +221,21 @@ class DirigeraCustomPlatform {
 
     const lightService = this.getOrCreateService(accessory, Service.Lightbulb, name);
 
-    // Rejestracja stany ON / OFF
+    // Przekazujemy odebrany stan 'isOn' do HomeKit
     lightService.updateCharacteristic(Characteristic.On, isOn);
 
-    // Rejestracja poziomu jasności / głośności (lightLevel)
+    // Przekazujemy odebrany poziom 'lightLevel' jako jasność do HomeKit
     lightService.updateCharacteristic(Characteristic.Brightness, lightLevel);
+
+    // Opcjonalnie: Ignorujemy próby sterowania tym pilotem z poziomu aplikacji Dom,
+    // ponieważ pilot tylko wysyła stany (canSend), a nie odbiera (canReceive).
+    if (!lightService.getCharacteristic(Characteristic.On).listeners('set').length) {
+      lightService.getCharacteristic(Characteristic.On).onSet(() => {
+        // Przywracamy poprzedni stan, bo pilot nie odbiera rozkazów
+        setTimeout(() => {
+          lightService.updateCharacteristic(Characteristic.On, isOn);
+        }, 50);
+      });
+    }
   }
 }

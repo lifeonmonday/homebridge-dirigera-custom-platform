@@ -1,8 +1,8 @@
 {
   "name": "homebridge-dirigera-custom-platform",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "Custom Homebridge platform for unsupported IKEA Dirigera Zigbee devices",
+  "description": "Custom Homebridge platform for unsupported IKEA Dirigera devices",
   "author": {
     "name": "lifeonmonday"
   },

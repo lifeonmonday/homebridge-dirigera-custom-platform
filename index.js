@@ -79,28 +79,49 @@ class DirigeraCustomPlatform {
   }
 
   handleRemotePress(deviceId, clickPattern) {
-    const uuid = this.api.hap.uuid.generate(deviceId);
-    const accessory = this.accessories.find(acc => acc.UUID === uuid);
-
-    if (!accessory) return;
-
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
-    const buttonService = accessory.getService(Service.StatelessProgrammableSwitch);
 
-    if (!buttonService) return;
-
+    // 1. Walidacja i mapowanie kliknięcia (Early exit, jeśli zdarzenie nie jest kliknięciem)
     let eventValue;
     if (clickPattern === 'singlePress') {
       eventValue = Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS;
+    } else if (clickPattern === 'doublePress') {
+      eventValue = Characteristic.ProgrammableSwitchEvent.DOUBLE_PRESS;
     } else if (clickPattern === 'longPress') {
       eventValue = Characteristic.ProgrammableSwitchEvent.LONG_PRESS;
     }
 
-    if (eventValue !== undefined) {
-      this.log.info(`Pilot ${accessory.displayName}: ${clickPattern}`);
-      buttonService.updateCharacteristic(Characteristic.ProgrammableSwitchEvent, eventValue);
+    if (eventValue === undefined) return;
+
+    // 2. Znalezienie akcesorium i odpowiedniego serwisu
+    // Najpierw sprawdzamy pojedynczy przycisk (Sonoff - pełny deviceId)
+    const directUuid = this.api.hap.uuid.generate(deviceId);
+    let accessory = this.accessories.find(acc => acc.UUID === directUuid);
+    let buttonService = null;
+
+    if (accessory) {
+      buttonService = accessory.getService(Service.StatelessProgrammableSwitch);
+    } else {
+      // Dwuprzyciskowy (BILRESA - bazowy ID bez _1 / _2)
+      const baseId = deviceId.split('_')[0];
+      const buttonNumber = deviceId.split('_')[1];
+      const baseUuid = this.api.hap.uuid.generate(baseId);
+
+      accessory = this.accessories.find(acc => acc.UUID === baseUuid);
+      if (accessory) {
+        buttonService = accessory.getServiceByUUIDAndSubType(
+          Service.StatelessProgrammableSwitch,
+          `button_${buttonNumber}`
+        );
+      }
     }
+
+    if (!accessory || !buttonService) return;
+
+    // 3. Wysłanie stanu do HomeKit
+    this.log.info(`Pilot ${accessory.displayName}: ${clickPattern}`);
+    buttonService.updateCharacteristic(Characteristic.ProgrammableSwitchEvent, eventValue);
   }
 
   // --- ODCZYT URZĄDZEŃ PRZEZ REST API ---
@@ -145,22 +166,34 @@ class DirigeraCustomPlatform {
   }
 
   handleDevice(device) {
-    const uuid = this.api.hap.uuid.generate(device.id);
-    const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
     const deviceType = device.deviceType;
     const model = device.attributes?.model;
 
     // 1. TERMOSTAT (Z czujnika temperatury)
     if (device.attributes?.currentTemperature !== undefined) {
+      const uuid = this.api.hap.uuid.generate(device.id);
+      const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
       this.setupThermostat(device, uuid, existingAccessory);
     }
     // 2. CZUJNIK OBECNOŚCI
     else if (deviceType === 'occupancySensor') {
+      const uuid = this.api.hap.uuid.generate(device.id);
+      const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
-    // 3. PILOTY: soundController LUB konkretny Sonoff (SNZB-01P)
-    else if (deviceType === 'soundController' || (deviceType === 'lightController' && model === 'SNZB-01P')) {
-      this.setupButton(device, uuid, existingAccessory);
+    // 3. PILOT SONOFF (SNZB-01P)
+    else if (deviceType === 'lightController' && model === 'SNZB-01P') {
+      const uuid = this.api.hap.uuid.generate(device.id);
+      const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
+      this.setupSingleButton(device, uuid, existingAccessory);
+    }
+    // 4. PILOTY BILRESA
+    else if (deviceType === 'genericSwitch') {
+      // Ucinamy _1/_2 z ID, aby zepiąć oba przyciski w jedno akcesorium HomeKit
+      const baseId = device.id.split('_')[0];
+      const uuid = this.api.hap.uuid.generate(baseId);
+      const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
+      this.setupDualButton(device, uuid, existingAccessory);
     }
   }
 
@@ -255,34 +288,75 @@ class DirigeraCustomPlatform {
     this.updateAccessoryInformation(accessory, device);
 
     const service = this.getOrCreateService(accessory, Service.OccupancySensor, name);
-    const state = isDetected 
-      ? Characteristic.OccupancyDetected.OCCUPANCY_DETECTED 
+    const state = isDetected
+      ? Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
       : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED;
 
     service.updateCharacteristic(Characteristic.OccupancyDetected, state);
   }
 
   // --- PILOTY (PROGRAMMABLE SWITCH) ---
-  setupButton(device, uuid, existingAccessory) {
-    const name = device.attributes?.customName || 'Wireless Switch';
-
+  // --- Pilot pojedynczy (SONOFF) ---
+  setupSingleButton(device, uuid, existingAccessory) {
+    const name = device.attributes?.customName || 'Sonoff Button';
     const Service = this.api.hap.Service;
     const Characteristic = this.api.hap.Characteristic;
 
     let accessory = existingAccessory;
 
     if (!accessory) {
-      this.log.info(`Rejestracja pilota: ${name} (${device.attributes?.model || device.deviceType})`);
+      this.log.info(`Rejestracja pilota Sonoff: ${name}`);
       accessory = new this.api.platformAccessory(name, uuid);
 
       const buttonService = accessory.addService(Service.StatelessProgrammableSwitch, name);
       buttonService.getCharacteristic(Characteristic.ProgrammableSwitchEvent)
         .setProps({
           validValues: [
-            Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS,
-            Characteristic.ProgrammableSwitchEvent.LONG_PRESS,
+            Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS
           ]
         });
+
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.push(accessory);
+    }
+
+    this.updateAccessoryInformation(accessory, device);
+  }
+
+  // --- Pilot dwuprzyciskowy (BILRESA) ---
+  setupDualButton(device, uuid, existingAccessory) {
+    const rawName = device.attributes?.customName || 'BILRESA Switch';
+    const name = rawName.replace(/_[0-9]+$/, '');
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    let accessory = existingAccessory;
+
+    if (!accessory) {
+      this.log.info(`Rejestracja pilota BILRESA: ${name}`);
+      accessory = new this.api.platformAccessory(name, uuid);
+
+      // Etykieta nadrzędna grupująca przyciski w HomeKit
+      const labelService = accessory.addService(Service.ServiceLabel, name);
+      labelService.setCharacteristic(Characteristic.ServiceLabelNamespace, Characteristic.ServiceLabelNamespace.ARABIC_NUMERALS);
+
+      const dualProps = {
+        validValues: [
+          Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS,
+          Characteristic.ProgrammableSwitchEvent.DOUBLE_PRESS,
+          Characteristic.ProgrammableSwitchEvent.LONG_PRESS
+        ]
+      };
+
+      // Przycisk 1 (Top)
+      const btn1 = accessory.addService(Service.StatelessProgrammableSwitch, 'Top Button', 'button_1');
+      btn1.setCharacteristic(Characteristic.ServiceLabelIndex, 1);
+      btn1.getCharacteristic(Characteristic.ProgrammableSwitchEvent).setProps(dualProps);
+
+      // Przycisk 2 (Bottom)
+      const btn2 = accessory.addService(Service.StatelessProgrammableSwitch, 'Bottom Button', 'button_2');
+      btn2.setCharacteristic(Characteristic.ServiceLabelIndex, 2);
+      btn2.getCharacteristic(Characteristic.ProgrammableSwitchEvent).setProps(dualProps);
 
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.push(accessory);

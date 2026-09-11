@@ -292,6 +292,12 @@ class DirigeraCustomPlatform {
       ? Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
       : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED;
 
+    // Pobieramy dotychczasowy stan z HomeKit przed aktualizacją
+       const currentState = service.getCharacteristic(Characteristic.OccupancyDetected).value;
+
+    if (currentState !== state) {
+      this.log.info(`Czujnik obecności ${name}: ${isDetected ? 'Wykryto ruch / obecność' : 'Brak obecności (czysto)'}`);
+    }
     service.updateCharacteristic(Characteristic.OccupancyDetected, state);
   }
 

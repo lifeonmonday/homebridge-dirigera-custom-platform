@@ -120,7 +120,7 @@ class DirigeraCustomPlatform {
     if (!accessory || !buttonService) return;
 
     // 3. Wysłanie stanu do HomeKit
-    this.log.info(`Pilot ${accessory.displayName}: ${clickPattern}`);
+    this.log.info(`Pilot ${accessory.displayName} (${buttonService.displayName}): ${clickPattern}`);
     buttonService.updateCharacteristic(Characteristic.ProgrammableSwitchEvent, eventValue);
   }
 
@@ -149,8 +149,19 @@ class DirigeraCustomPlatform {
 
         try {
           const devices = JSON.parse(data);
+          const activeUuids = [];
+
           for (const device of devices) {
-            this.handleDevice(device);
+            const uuid = this.handleDevice(device);
+            if (uuid) activeUuids.push(uuid);
+          }
+
+          // Usuwanie z HomeKit akcesoriów usuniętych z Dirigery
+          const staleAccessories = this.accessories.filter(acc => !activeUuids.includes(acc.UUID));
+          if (staleAccessories.length > 0) {
+            this.log.info(`Usuwanie ${staleAccessories.length} usuniętych akcesoriów z HomeKit...`);
+            this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, staleAccessories);
+            this.accessories = this.accessories.filter(acc => activeUuids.includes(acc.UUID));
           }
         } catch (err) {
           this.log.error(`Błąd przetwarzania danych: ${err.message}`);
@@ -168,22 +179,23 @@ class DirigeraCustomPlatform {
   handleDevice(device) {
     const deviceType = device.deviceType;
     const model = device.attributes?.model;
+    let uuid;
 
     // 1. TERMOSTAT (Z czujnika temperatury)
     if (device.attributes?.currentTemperature !== undefined) {
-      const uuid = this.api.hap.uuid.generate(device.id);
+      uuid = this.api.hap.uuid.generate(device.id);
       const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
       this.setupThermostat(device, uuid, existingAccessory);
     }
     // 2. CZUJNIK OBECNOŚCI
     else if (deviceType === 'occupancySensor') {
-      const uuid = this.api.hap.uuid.generate(device.id);
+      uuid = this.api.hap.uuid.generate(device.id);
       const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
       this.setupOccupancySensor(device, uuid, existingAccessory);
     }
     // 3. PILOT SONOFF (SNZB-01P)
     else if (deviceType === 'lightController' && model === 'SNZB-01P') {
-      const uuid = this.api.hap.uuid.generate(device.id);
+      uuid = this.api.hap.uuid.generate(device.id);
       const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
       this.setupSingleButton(device, uuid, existingAccessory);
     }
@@ -191,10 +203,12 @@ class DirigeraCustomPlatform {
     else if (deviceType === 'genericSwitch') {
       // Ucinamy _1/_2 z ID, aby zepiąć oba przyciski w jedno akcesorium HomeKit
       const baseId = device.id.split('_')[0];
-      const uuid = this.api.hap.uuid.generate(baseId);
+      uuid = this.api.hap.uuid.generate(baseId);
       const existingAccessory = this.accessories.find(acc => acc.UUID === uuid);
       this.setupDualButton(device, uuid, existingAccessory);
     }
+
+    return uuid;
   }
 
   getOrCreateService(accessory, serviceType, name) {

@@ -110,7 +110,7 @@ class DirigeraCustomPlatform {
 
       accessory = this.accessories.find(acc => acc.UUID === baseUuid);
       if (accessory) {
-        buttonService = accessory.getServiceByUUIDAndSubType(
+        buttonService = accessory.getServiceById(
           Service.StatelessProgrammableSwitch,
           `button_${buttonNumber}`
         );
